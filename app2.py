@@ -11,6 +11,7 @@ from random import randint
 from classes.item_class import Item
 from classes.cart_class import Cart
 import database.product_db as db
+from utils import process_frame
 
 # Elastic Beanstalk looks for an 'application' that is callable by default
 app = Flask(__name__)
@@ -106,31 +107,37 @@ def frame(name):
 def prediction():
     content = request.json
     frame = json.loads(content)
-    frame = cv2.UMat(np.array(frame, dtype=np.uint8))
+    image = cv2.UMat(np.array(frame, dtype=np.uint8))
 
-    # Load Yolo
-    net = cv2.dnn.readNet("cfg/yolov3_pao2.weights", "cfg/yolov3_pao2.cfg")
-    #net = cv2.dnn.readNet("yolov3_custom_last.weights", "yolov3_custom.cfg")
+    # Define constants
+    # CONF_THRESHOLD is confidence threshold. Only detection with confidence greater than this will be retained
+    # NMS_THRESHOLD is used for non-max suppression
+    CONF_THRESHOLD = 0.8
+    NMS_THRESHOLD = 0.2
 
-    # Name custom object
-    products = db.getAllProducts()
+    # Read image from command line arguments
+    # Create blob from image
+    blob = cv2.dnn.blobFromImage(image, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
+
     classes = []
-    for product in products:
-        classes.append(product.getName())
+    with open("classes.txt", "r") as f:
+        classes = [cname.strip() for cname in f.readlines()]
 
-    layer_names = net.getLayerNames()
-    output_layers = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
-    colors = np.random.uniform(0, 255, size=(len(classes), 3))
+    # Load the network with YOLOv3 weights and config using darknet framework
+    net = cv2.dnn.readNet("yolov4.weights", "yolov4.cfg", "darknet")
 
-    # Loading image
-    img = frame 
-    #img = cv2.resize(img, None, fx=0.4, fy=0.4)
-    height, width, channels = img.get().shape
+    # Get the output layer names used for forward pass
+    outNames = net.getUnconnectedOutLayersNames()
 
-    # Detecting objects
-    blob = cv2.dnn.blobFromImage(img, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
+    # Set the input
     net.setInput(blob)
-    outs = net.forward(output_layers)
+
+    # Run forward pass
+    outs = net.forward(outNames)
+
+    # Process output and draw predictions
+    # Get all products ids which were identified
+    products_id = process_frame(image, outs, classes, CONF_THRESHOLD, NMS_THRESHOLD)
 
     # Showing informations on the screen
     class_ids = []
@@ -138,42 +145,14 @@ def prediction():
     boxes = []
     qtd = np.zeros(len(classes))
     cart = Cart()
-    for out in outs:
-        for detection in out: # detection = [w, h, x, y, c1, c2, ...]
-            scores = detection[5:]
-            class_id = np.argmax(scores)
-            confidence = scores[class_id]
-            if confidence > 0.3:
-                # Object detected
-                productName = classes[class_id]
-                item = Item(productName)
-                cart.addProduct(item)
-                qtd[class_id] += 1
-                center_x = int(detection[0] * width)
-                center_y = int(detection[1] * height)
-                w = int(detection[2] * width)
-                h = int(detection[3] * height)
+    for item_id in products_id:
+        productName = classes[item_id]
+        item = Item(productName)
+        cart.addProduct(item)
+        qtd[item_id] += 1
 
-                # Rectangle coordinates
-                x = int(center_x - w / 2)
-                y = int(center_y - h / 2)
 
-                boxes.append([x, y, w, h])
-                confidences.append(float(confidence))
-                class_ids.append(class_id)
-
-    indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
-
-    font = cv2.FONT_HERSHEY_PLAIN
-    for i in range(len(boxes)):
-        if i in indexes:
-            x, y, w, h = boxes[i]
-            label = str(classes[class_ids[i]])
-            color = colors[class_ids[i]]
-            cv2.rectangle(img, (x, y), (x + w, y + h), color, 2)
-            cv2.putText(img, label, (x, y + 30), font, 3, color, 2)
-
-    img = cv2.UMat.get(img).tolist()
+    img = cv2.UMat.get(image).tolist()
     hashtable = {"cart": cart, "data": img}
     content = json.dumps(hashtable, default=lambda o: o.__dict__)
     #print(content)

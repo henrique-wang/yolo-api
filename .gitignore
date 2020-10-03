@@ -7,3 +7,4 @@
 temp/*
 cfg/*
 dataLake/*
+yolov4.weights
